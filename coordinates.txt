@@ -1,0 +1,15 @@
+-10 0  10
+ 10 0  10
+ 10 0 -10
+-10 0 -10
+
+
+the table:
+    table floor:
+        x1 = -10, y1 = 0, z1 = -5
+        x2 = 10, y2 = 3, z2 = 5
+    table edge 1:
+        x1 = table_floor.x1, y1 = table_floor.y2, z1 = table_floor.z1
+        x2 = table_floor.x1 + 5, y2 = y1 + 3, z2 = table_floor.z2
+    table edge 2:
+    
