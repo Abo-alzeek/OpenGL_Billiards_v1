@@ -1,9 +1,9 @@
 #include <GL/glut.h>
 #include <iostream>
 #include <cmath>
-#include <glm/glm.hpp>       // Core GLM functions
-#include <glm/gtc/matrix_transform.hpp>  // For matrix transformations like lookAt
-#include <glm/gtc/type_ptr.hpp> // For converting glm types to OpenGL types (e.g., mat4 to float*)
+#include <glm/glm.hpp>                  // Core GLM functions
+#include <glm/gtc/matrix_transform.hpp> // For matrix transformations like lookAt
+#include <glm/gtc/type_ptr.hpp>         // For converting glm types to OpenGL types (e.g., mat4 to float*)
 #include <X11/Xlib.h>
 
 // screen resolutions
@@ -11,38 +11,65 @@ const float EPS = 1e-6;
 const int screen_width = 1200;
 const int screen_height = 800;
 
+const float pocketRadius = 0.1;
+const float pocketDepth = 0.2;
+const float table_width = 2.8f;
+const float table_height = 1.4;
+
+const int balls_count = 16;
+bool isMousePressed = false;
+float strength = 0.0;
+
 bool keys[256];  // Array to keep track of key presses
+
+float distance(glm::vec3 p1, glm::vec3 p2 = {0, 0 ,0}) {
+    return sqrt( (p1.x - p2.x) * (p1.x - p2.x) + (p1.y - p2.y) * (p1.y - p2.y) + (p1.z - p2.z) * (p1.z - p2.z) );
+}
 
 class Camera {
 public:
-    glm::vec3 position = glm::vec3(0, 5, 15);
+    glm::vec3 position = glm::vec3(0, 1.3, 5);
     glm::vec3 look = glm::vec3(0, 0, -1);
     glm::vec3 up = glm::vec3(0, 1, 0);
 
-    float cameraMovementSpeed = 0.025;
+    float cameraMovementSpeed = 0.01;
     float cameraSensitivity = 0.001;
+
+    glm::vec3 getPropperVector() {
+        glm::vec3 ret = look;
+        ret.y = position.y;
+        ret /= distance(ret);
+        return ret;
+    }
+
 } camera;
 
 class Ball {
 public:
-    float radius;
-    glm::vec3 position, color;
+    bool active = true;
+    float radius, mass = 1.0;
+    glm::vec3 position, color, velocity = {0, 0, 0};
 
-    Ball() { }
+    Ball() {
+        active = true;
+    }
     
     Ball(float r) {
         radius = r;
+        active = true;
     }
     
     Ball(float rad, float r, float g, float b) {
         radius = rad;
         color = {r, g, b};
+        active = true;
     }
 
     Ball(float rad, float r, float g, float b, float x, float y, float z) {
         radius = rad;
         color = glm::vec3(r, g, b);
         position = glm::vec3(x, y, z);
+        active = true;
     }
 
     // Function to draw a colored sphere
@@ -53,7 +80,49 @@ public:
         glutSolidSphere(radius, 50, 50); // Draw the sphere
         glPopMatrix(); // Restore the previous transformation matrix
     }
-} balls[16]; // zero is the cue ball
+
+    void setMovement(glm::vec3 v) {
+        velocity = v;
+        velocity.y = 0;
+    }
+
+    void move() {
+        float dec = 0.0000625;
+        
+        position += velocity;
+        float len = distance(velocity);
+        float ratio = ((len - dec) / len);
+        velocity *= ratio;
+
+        if(len - dec < 0) {
+            velocity = {0, 0, 0};
+        }
+
+    }
+
+} balls[balls_count]; // zero is the cue ball
+
+float dot(glm::vec3 v1, glm::vec3 v2) {
+    return (v1.x * v2.x + v1.y * v2.y + v1.z * v2.z);
+}
+
+void print(glm::vec3 v) {
+    std::cout << v.x << " " << v.y << " " << v.z;
+}
+
+// Function to compute the intersection point
+glm::vec3 projectPointOntoLine(const glm::vec3& point, const glm::vec3& lineOrigin, const glm::vec3& lineDirection) {
+    // Vector from line origin to point
+    glm::vec3 L = point - lineOrigin;
+
+    // Compute t
+    float t = dot(L, lineDirection) / dot(lineDirection, lineDirection);
+
+    // Compute the projection point Q
+    glm::vec3 Q = lineOrigin + lineDirection * t;
+
+    return Q;
+}
 
 void rotatVector(glm::vec3 &vector, glm::vec3 axis, float angle) {
     // Create the rotation matrix
@@ -207,9 +276,6 @@ void drawTable() {
     drawCylinder(-1.3, 0.49, 0.6, 0.1, 0.5, 0.3, 0.2, 0.1);
     drawCylinder(1.3, 0.49, 0.6, 0.1, 0.5, 0.3, 0.2, 0.1);
 
-    float pocketRadius = 0.1;
-    float pocketDepth = 0.2;
-
     // Corner pockets
     drawCircle(-1.4, 0.52, -0.7, pocketRadius, pocketDepth, 0.0, 0.0, 0.0); // Bottom-left
     drawCircle(1.4, 0.52, -0.7, pocketRadius, pocketDepth, 0.0, 0.0, 0.0);  // Bottom-right
@@ -345,8 +411,115 @@ void setupLighting() {
     glLightfv(GL_LIGHT0, GL_SPECULAR, specularLight);
 }
 
+// Function to draw the aim dot
+void drawAimDot() {
+    // Disable depth testing to ensure the dot is always visible
+    glDisable(GL_DEPTH_TEST);
+
+    // Switch to orthographic projection
+    glMatrixMode(GL_PROJECTION);
+    glPushMatrix();             // Save the current projection matrix
+    glLoadIdentity();           // Reset the projection matrix
+    gluOrtho2D(0.0, 1.0, 0.0, 1.0); // Orthographic projection for screen-space
+
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();             // Save the current modelview matrix
+    glLoadIdentity();           // Reset the modelview matrix
+
+    // Draw the dot in the center of the screen
+    glPointSize(5.0f);         // Set point size
+    glColor3f(1.0f, 0.0f, 0.0f); // Red color for the aim dot
+    glBegin(GL_POINTS);
+    glVertex2f(0.5f, 0.5f);     // Center of the screen in normalized device coordinates
+    glEnd();
+
+    // Restore the previous matrices
+    glPopMatrix();
+    glMatrixMode(GL_PROJECTION);
+    glPopMatrix();
+
+    glMatrixMode(GL_MODELVIEW); // Switch back to modelview
+    glEnable(GL_DEPTH_TEST);    // Re-enable depth testing
+}
+
+void swap(glm::vec3 &s1, glm::vec3 &s2) {
+    glm::vec3 temp = s1;
+    s1 = s2;
+    s2 = temp;
+}
+
+void checkWallCollisions(Ball& ball) {
+    if (ball.position.x - ball.radius < -table_width / 2 || ball.position.x + ball.radius > table_width / 2) {
+        ball.velocity.x *= -1;
+    }
+
+    if (ball.position.z - ball.radius < -table_height / 2 || ball.position.z + ball.radius > table_height / 2) {
+        ball.velocity.z *= -1;
+    }
+}
+
+void checkBallCollisions(Ball& b1, Ball& b2) {
+    glm::vec3 delta = b1.position - b2.position;
+    float dist = glm::length(delta);
+
+    if (dist < b1.radius + b2.radius) {
+        glm::vec3 collisionNormal = glm::normalize(delta);
+        glm::vec3 relativeVelocity = b1.velocity - b2.velocity;
+
+        float velocityAlongNormal = glm::dot(relativeVelocity, collisionNormal);
+        if (velocityAlongNormal > 0) return;
+
+        float restitution = 1.0f;
+        float impulse = (1 + restitution) * velocityAlongNormal;
+        impulse /= 1 / b1.radius + 1 / b2.radius;
+
+        glm::vec3 impulseVector = impulse * collisionNormal;
+        b1.velocity -= impulseVector / b1.radius;
+        b2.velocity += impulseVector / b2.radius;
+    }
+}
+
+void checkPocketCollisions(Ball& ball) {
+    if(distance(glm::vec2(ball.position.x, ball.position.z), glm::vec2(1.4, 0.7)) < (pocketRadius/2.0 + ball.radius)) {
+        ball.active = false;
+    }
+    if(distance(glm::vec2(ball.position.x, ball.position.z), glm::vec2(-1.4, 0.7)) < (pocketRadius/2.0 + ball.radius)) {
+        ball.active = false;
+    }
+    if(distance(glm::vec2(ball.position.x, ball.position.z), glm::vec2(1.4, -0.7)) < (pocketRadius/2.0 + ball.radius)) {
+        ball.active = false;
+    }
+    if(distance(glm::vec2(ball.position.x, ball.position.z), glm::vec2(-1.4, -0.7)) < (pocketRadius/2.0 + ball.radius)) {
+        ball.active = false;
+    }
+
+    if(distance(glm::vec2(ball.position.x, ball.position.z), glm::vec2(0.0, -0.7)) < (pocketRadius/2.0 + ball.radius)) {
+        ball.active = false;
+    }
+    if(distance(glm::vec2(ball.position.x, ball.position.z), glm::vec2(0.0, 0.7)) < (pocketRadius/2.0 + ball.radius)) {
+        ball.active = false;
+    }
+
+}
+
+void update() {
+    for(int i = 0;i < balls_count;i++) {
+        if(!balls[i].active) continue;
+
+        checkWallCollisions(balls[i]);
+        checkPocketCollisions(balls[i]);
+        for(int j = i + 1;j < balls_count;j++) {
+            if(!balls[j].active) continue;
+
+            checkBallCollisions(balls[i], balls[j]);
+        }
+    }
+}
+
 // Display callback function
 void display() {
+    update();
+    
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); // Clear the screen
 
     glLoadIdentity(); // Reset transformations
@@ -364,9 +537,13 @@ void display() {
     // Draw the table
     drawTable();
 
-    for(int i = 0;i < 16;i++) {
+    for(int i = 0;i < balls_count;i++) {
+        if(!balls[i].active) continue;
+
         balls[i].drawColoredSphere();
     }
+
+    drawAimDot();
 
     glutSwapBuffers(); // Swap buffers to display the rendered scene
 }
@@ -376,9 +553,6 @@ void init() {
     glEnable(GL_DEPTH_TEST);  // Enable depth testing for proper 3D rendering
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f); // Set background color to black
     // setupLighting();
-
-    // needed length = 0.8660
-    // actual length = 
 
     balls[0] = Ball(0.05, 1.0, 1.0, 1.0, 2.0 + (-1.15), 0.55, 1.0 + (-1.0));
 
@@ -400,7 +574,7 @@ void init() {
     balls[13] = Ball(0.05, 1.0, 0.0, 0.0, 1.3 + (-1.7) - (0.0134 * 3), 0.55, 1.05 + (-1.0));
     balls[14] = Ball(0.05, 1.0, 0.0, 0.0, 1.3 + (-1.7) - (0.0134 * 3), 0.55, 0.95 + (-1.0));
     
-    balls[15] = Ball(0.05, 1.0, 0.0, 0.0, 1.4 + (-1.7) - (0.0134 * 4), 0.55, 1.0 + (-1.0));
+    balls[15] = Ball(0.05, 1.0, 0.0, 0.0, 1.4 + (-1.7) - (0.0134 * 4), 0.55, 1.00 + (-1.0));
 }
 
 // Function to handle window resizing
@@ -427,6 +601,41 @@ void idle() {
     // updateCamera();
     handleKeys();  // Update the camera position based on input
     glutPostRedisplay();  // Request a redraw to update the scene
+
+    bool noMovement = true;
+    for(int i = 0;i < 16;i++) {
+        if(distance(balls[i].velocity) > 1e-6) {
+            noMovement = false;
+        }
+
+        balls[i].move();
+    }
+
+    float limit = 0.1, inc = 0.00025;
+    if(noMovement && isMousePressed) {
+        strength += inc;
+        if(strength > limit) {
+            strength = limit;
+        }
+    }
+    else strength = 0;
+
+}
+
+void mouse(int button, int state, int x, int y) {
+    // Detect left mouse button press/release
+    if (button == GLUT_LEFT_BUTTON) {
+        if (state == GLUT_DOWN) {
+            isMousePressed = true; // Mouse is pressed
+        } else if (state == GLUT_UP) {
+            isMousePressed = false; // Mouse is released
+            
+            float dist = distance(balls[0].position, projectPointOntoLine(balls[0].position, camera.position, camera.look));
+            if(dist < balls[0].radius) {
+                balls[0].setMovement(camera.getPropperVector() * strength);
+            }
+        }
+    }
 }
 
 // Main function
@@ -452,6 +661,7 @@ int main(int argc, char** argv) {
     glutIdleFunc(idle);
     glutMotionFunc(mouseMotion);  // Register mouse motion callback
     glutPassiveMotionFunc(mouseMotion);  // Also capture passive mouse movement
+    glutMouseFunc(mouse);
 
     glutTimerFunc(0, timer, 0); // Set a timer to periodically reposition the cursor
 
@@ -464,3 +674,6 @@ int main(int argc, char** argv) {
 
 // g++ -I/usr/include/glm -I/usr/include/GL tester.cpp -o test -Lls /usr/lib/libglut.so -lGL -lGLU -lglut -lX11
 // g++ main.cpp -o main -lGL -lGLU -lglut -lX11 && ./main
+
+
+
